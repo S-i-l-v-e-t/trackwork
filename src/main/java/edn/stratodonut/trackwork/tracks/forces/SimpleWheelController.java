@@ -107,12 +107,13 @@ public class SimpleWheelController implements ShipForcesInducer {
     public void applyForces(@NotNull PhysShip physShip) {
         // DO NOTHING
     }
-
+    private double lastDelta = 0;
     private Pair<Vector3dc, Vector3dc> computeForce(SimpleWheelData data, PhysShipImpl ship, double coefficientOfPower, @NotNull Function1<? super Long, ? extends PhysShip> lookupPhysShip) {
         PoseVel pose = ship.getPoseVel();
         ShipTransform shipTransform = ship.getTransform();
         double m =  ship.getInertia().getShipMass();
         double gravity_factor = Math.max(0, shipTransform.getShipToWorldRotation().transform(UP, new Vector3d()).dot(UP));
+        gravity_factor = Math.min(gravity_factor, 0.9 + 0.1 * Math.exp(-Math.abs(gravity_factor - 0.9)));
         Vector3dc trackRelPosShip = data.wheelOriginPosition.sub(shipTransform.getPositionInShip(), new Vector3d());
 //            Vector3dc worldSpaceTrackOrigin = shipTransform.getShipToWorld().transformPosition(data.trackOriginPosition.get(new Vector3d()));
         Vector3d tForce = new Vector3d(); //data.trackSpeed;
@@ -126,16 +127,25 @@ public class SimpleWheelController implements ShipForcesInducer {
         }
 
         // Suspension
+        double suspensionDelta = velocityAtPosition.dot(trackNormal) + data.getSuspensionCompressionDelta().length();
         if (data.isWheelGrounded) {
-            double suspensionDelta = velocityAtPosition.dot(trackNormal) + data.getSuspensionCompressionDelta().length();
+            double K_p = 1;
+            double K_d = 0.5;
+            double dampingForce = K_p * (-suspensionDelta * this.suspensionStiffness) + (K_d * (-(suspensionDelta - lastDelta) * this.suspensionStiffness)); // add dampingForce by PD controller
+            lastDelta = suspensionDelta;
             double tilt = 1 + this.tilt(trackRelPosShip);
-            tForce.add(data.suspensionCompression.mul(m * 4.0 * coefficientOfPower * this.suspensionStiffness * tilt, new Vector3d()));
-            tForce.add(trackNormal.mul(m * 1.2 * -suspensionDelta * coefficientOfPower * this.suspensionStiffness, new Vector3d()));
+            tForce.add(data.suspensionCompression.mul(m * 4.0 * coefficientOfPower * this.suspensionStiffness * tilt * 1.5, new Vector3d()));
+            tForce.add(trackNormal.mul(m * 1.2 * dampingForce * coefficientOfPower, new Vector3d()));
             // Really half-assed antislip when the spring is stronger than friction (what?)
+            double maxSuspensionForce = m * gravity_factor * 5;
+            if (tForce.length() > maxSuspensionForce) {
+                tForce.normalize().mul(maxSuspensionForce);
+            }
             if (data.wheelRPM == 0) {
                 tForce = new Vector3d(0, tForce.y(), 0);
             }
         }
+
 
         if (data.isWheelGrounded || trackSurface.lengthSquared() > 0) {
             // Torque
@@ -163,7 +173,10 @@ public class SimpleWheelController implements ShipForcesInducer {
         }
 
         Vector3dc trackRelPos = shipTransform.getShipToWorldRotation().transform(trackRelPosShip, new Vector3d());//worldSpaceTrackOrigin.sub(shipTransform.getPositionInWorld(), new Vector3d());
-        Vector3dc torque = trackRelPos.cross(tForce, new Vector3d());
+        Vector3dc torque = trackRelPos.cross(tForce, new Vector3d()).mul(2);
+        //if (Math.abs(suspensionDelta) < 0.07 && velocityAtPosition.length() < 0.07) {
+        //    tForce.zero();
+        //}
         return new Pair<>(tForce, torque);
     }
 
